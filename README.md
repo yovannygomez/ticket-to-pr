@@ -1,65 +1,112 @@
 # ticket-to-pr
 
 A durable pipeline that takes a Jira ticket to a reviewed pull request.
-Temporal orchestrates, an agent writes the spec, the tests and the code, and
-deterministic gates decide what gets through. People approve at two points:
-the spec, and the pull request.
+**Temporal** orchestrates, **Claude Code** writes the tests and the code in a
+throwaway sandbox, **deterministic gates** and the repository's **CI** decide
+what gets through, and **LangFuse** shows what every step cost. People stay
+in charge at two points: they approve the spec, and they review the PR.
 
-> Status: phase 1 skeleton. The workflow, signals, retries and timeouts run
-> for real on a self-hosted Temporal; the Jira, Claude Code and GitHub
-> adapters are fakes for now.
+<!-- demo video: drag the MP4 into this spot in GitHub's web editor -->
+
+It works on [listings-api](https://github.com/yovannygomez/listings-api), a
+small FastAPI service, and has run real tickets end to end: about **$0.12 to
+$0.22 per ticket**, most of it Claude Code, and mostly cache reads.
 
 ## The flow
 
 ```
-Jira: "Ready for agent"
-   │ webhook (signed)
-   ▼
-receiver (FastAPI) ── signal-with-start ──► Temporal server (history + queues)
-                                                 ▲ poll
-                                                 │
-worker ─ TicketWorkflow ────────────────────────┘
-  1 read ticket → definition of ready?  no → questions on the ticket, "Needs info", wait
-  2 draft spec → comment on the ticket, "Spec review", wait
-        "Ready for agent" again → changes requested → redraft
-        "Spec approved"         → continue
-  3 "Agent working" → write tests from the acceptance criteria (frozen at a SHA)
-  4 implement → gates → failures go back to the agent, at most 2 fixes
-  5 open the pull request → link on the ticket → "In review"
+Jira ticket ──"Ready for agent"──► receiver (or local poller) ──signal──► Temporal
+                                                                            │
+TicketWorkflow (one durable run per ticket)                                 │
+                                                                            ▼
+ 1 Definition of ready    not testable yet? questions on the ticket → "Needs info" → wait
+ 2 Spec                   drafted from the ticket and the real code → "Spec review" → wait
+                            "Ready for agent" again = changes requested → redraft
+                            "Spec approved"        = go
+ 3 Tests                  Claude Code writes them from the acceptance tests; they must
+                          fail first; pushed and frozen at a SHA          (can't edit app/)
+ 4 Implementation         Claude Code makes them pass                    (can't edit tests/)
+ 5 Local gates            ruff · pytest · existing tests unchanged · approved tests
+                          unchanged since their SHA · no new skip/xfail · main's tests
+                          on this branch            failures go back to the agent, max 2
+ 6 Draft PR + CI          the repository's CI is the source of truth
+                          red → failed job's log back to the agent → push to the same PR
+ 7 Hand-off               out of draft, assigned to the reviewer → "In review"
 ```
 
-Every human wait times out after 7 days and says so on the ticket.
+Every human wait times out after 7 days and says so on the ticket. A
+progress checklist on the ticket is edited in place at every step, so
+nobody needs to open Temporal to know where a ticket is.
+
+## What each tool shows
+
+| Tool | Where | What you see |
+|---|---|---|
+| Jira | the ticket | the agent's questions, the spec, the progress checklist, the PR link |
+| Temporal UI | http://localhost:8233 | one run per ticket: every step, its input and output, retries, timers, the worker that ran it |
+| LangFuse | Sessions → the ticket key | every model call with prompt, output, tokens, cost and latency |
+| GitHub | the PR | tests commit, implementation commit, CI, the spec and the gates in the description |
 
 ## Run it locally
 
-Needs Python 3.12 and Docker.
+Needs Python 3.12, Docker, a Jira Cloud site with these statuses (in order):
+`To Do`, `Ready for agent`, `Needs info`, `Spec review`, `Spec approved`,
+`Agent working`, `In review`, `Done`; a GitHub repository with CI; an
+Anthropic API key; and a LangFuse project.
 
 ```bash
 make install
-make up                                   # Temporal + Postgres + UI on http://localhost:8233
-make worker                               # in one terminal
-.venv/bin/python -m pipeline.cli start LIST-7      # = ticket moved to "Ready for agent"
-.venv/bin/python -m pipeline.cli stage LIST-7      # waiting for spec approval
-.venv/bin/python -m pipeline.cli approve LIST-7    # = ticket moved to "Spec approved"
+cp .env.example .env        # fill in the values; .env is git-ignored
+make up                     # Temporal + Postgres + UI, and builds the sandbox image
+make worker                 # terminal 1: runs the workflow and its activities
+make poller                 # terminal 2: watches Jira every 10 s (local stand-in for the webhook)
 ```
 
-Open the UI to see the run's event history.
-
-## Tests
+Then move a ticket to **Ready for agent** and watch it go. Without Jira,
+`ADAPTERS=fake` runs the same workflow against in-memory adapters, driven by
+`python -m pipeline.cli start|approve|stage KEY`.
 
 ```bash
-make lint test
+make lint test              # the workflow tests run on Temporal's time-skipping server
 ```
 
-The workflow tests run on Temporal's time-skipping test server, so a
-seven-day wait for a reviewer finishes in milliseconds.
+## Decisions
+
+| | |
+|---|---|
+| [0001](docs/adr/0001-temporal-self-hosted.md) | Temporal, self-hosted, for a process that lasts days and waits on people |
+| [0002](docs/adr/0002-sandbox-per-step.md) | A throwaway sandbox per step, with different permissions per step |
+| [0003](docs/adr/0003-deterministic-gates-and-ci.md) | Deterministic gates decide; the repository's CI is the source of truth |
+| [0004](docs/adr/0004-langfuse-in-activities.md) | LangFuse inside activities, one session per ticket |
+| [0005](docs/adr/0005-production-on-aws.md) | How this runs in production on AWS |
+
+## Security in one paragraph
+
+The sandbox gets the ticket's working copy and a model key, nothing else: the
+worker does every push, with a token that never touches the clone's config.
+The GitHub token is fine-grained to one repository and has no Workflows
+permission, and the sandbox denies edits to `.github/`: the agent can trigger
+CI and read its logs, but never change the CI that judges it. Each Claude Code
+step runs with its own permissions, verified by a probe: in the implement
+step an edit to `app/` succeeds and an edit to `tests/` is refused.
 
 ## Layout
 
 | Path | What it is |
 |---|---|
-| `pipeline/workflow.py` | The workflow: order, waits, retries. Deterministic, no I/O. |
-| `pipeline/activities.py` | Every step with side effects, delegating to an adapter. |
-| `pipeline/adapters/` | `base.py` interfaces; `fake.py` in-memory; Jira, GitHub, Claude Code next. |
+| `pipeline/workflow.py` | The workflow: order, waits, retries, the progress checklist. Deterministic, no I/O. |
+| `pipeline/activities.py` | Every step with side effects, delegating to an adapter; heartbeats on long steps. |
+| `pipeline/adapters/` | `base.py` interfaces; `jira.py`, `github.py`, `claude.py`, `sandbox.py`; `fake.py` for tests. |
 | `pipeline/receiver.py` | Jira webhook → one Temporal call → 200. |
-| `pipeline/worker.py` | Polls the task queue and runs the code. |
+| `pipeline/poller.py` | Local stand-in for the webhook. |
+| `sandbox/` | The sandbox image, its per-step permissions, and the gates. |
+
+## Not done yet
+
+- The AWS deployment in [0005](docs/adr/0005-production-on-aws.md) is designed, not applied.
+- The agent comments with the token owner's Jira account; in a team it gets its own service account.
+- A Bitbucket adapter (the interfaces are ready for it).
+
+## License
+
+[MIT](LICENSE)
