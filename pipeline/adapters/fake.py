@@ -27,6 +27,7 @@ class FakeTracker:
     tickets: dict[str, Ticket] = field(default_factory=dict)
     comments: list[tuple[str, str]] = field(default_factory=list)
     moves: list[tuple[str, str]] = field(default_factory=list)
+    progress: dict[str, str] = field(default_factory=dict)
 
     async def get_ticket(self, key: str) -> Ticket:
         if key not in self.tickets:
@@ -46,6 +47,9 @@ class FakeTracker:
 
     async def move(self, key: str, status: str) -> None:
         self.moves.append((key, status))
+
+    async def upsert_progress(self, key: str, body: str) -> None:
+        self.progress[key] = body
 
 
 @dataclass

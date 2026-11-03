@@ -1,6 +1,23 @@
 {
   "permissions": {
-    "allow": ["Read", "Glob", "Grep", "Edit(./app/**)", "Write(./app/**)", "Bash(python -m pytest:*)", "Bash(pytest:*)", "Bash(ruff check:*)"],
-    "deny": ["Edit(./tests/**)", "Write(./tests/**)", "Edit(./.github/**)", "Write(./.github/**)", "WebFetch", "WebSearch"]
+    "defaultMode": "acceptEdits",
+    "allow": [
+      "Read",
+      "Glob",
+      "Grep",
+      "Bash(python -m pytest:*)",
+      "Bash(pytest:*)",
+      "Bash(ruff check:*)"
+    ],
+    "deny": [
+      "Edit(./tests/**)",
+      "Write(./tests/**)",
+      "Edit(./.github/**)",
+      "Write(./.github/**)",
+      "Edit(./.claude/**)",
+      "Write(./.claude/**)",
+      "WebFetch",
+      "WebSearch"
+    ]
   }
 }

@@ -66,6 +66,39 @@ CI_WAIT = dict(
 )
 
 
+PROGRESS_MARKER = "ticket-to-pr progress"
+STEPS = [
+    ("checking readiness", "Ticket has what a spec needs"),
+    ("drafting spec", "Spec drafted"),
+    ("waiting for spec approval", "Spec approved by a person"),
+    ("writing tests", "Tests written from the acceptance criteria"),
+    ("implementing", "Code implemented"),
+    ("running gates", "Local gates passed"),
+    ("waiting for CI", "Pull request CI passed"),
+    ("done", "Handed to the reviewer"),
+]
+STEP_OF = {stage: index for index, (stage, _) in enumerate(STEPS)} | {"waiting for info": 0}
+
+
+def progress_comment(reached: int, stage: str, attempts: int) -> str:
+    """A checklist: done, current, still to do. One comment, edited in place."""
+    finished = stage == "done"
+    lines = [f"## {PROGRESS_MARKER}"]
+    for index, (_, label) in enumerate(STEPS):
+        if index < reached or finished:
+            mark = "✅"
+        elif index == reached:
+            mark = {"stopped": "⛔", "failed": "❌"}.get(stage, "⏳")
+            if stage == "waiting for info":
+                label += " (waiting for answers)"
+            elif index in (STEP_OF["implementing"], STEP_OF["running gates"]) and attempts > 1:
+                label += f" (attempt {attempts})"
+        else:
+            mark = "⬜"
+        lines.append(f"- {mark} {label}")
+    return "\n".join(lines)
+
+
 def spec_comment(spec: Spec) -> str:
     tests = "\n".join(f"- {test}" for test in spec.acceptance_tests)
     return (
@@ -86,6 +119,8 @@ class TicketWorkflow:
         self._ready_signals = 0
         self._approved = False
         self._stage = "starting"
+        self._reached = 0
+        self._attempts = 0
 
     @workflow.signal
     def ready_for_agent(self) -> None:
@@ -101,6 +136,7 @@ class TicketWorkflow:
 
     @workflow.run
     async def run(self, key: str) -> str:
+        self._key = key
         try:
             ticket = await self._ready_ticket(key)
             spec = await self._approved_spec(ticket)
@@ -115,22 +151,22 @@ class TicketWorkflow:
             await workflow.execute_activity_method(Activities.hand_to_reviewer, pull_request, **QUICK)
             await self._comment(key, f"CI passed. Pull request ready for review: {pull_request.url}")
             await self._move(key, IN_REVIEW)
-            self._stage = "done"
+            await self._report("done")
             return pull_request.url
         except Stopped as stop:
             await self._comment(key, f"Agent stopped: {stop}")
-            self._stage = "stopped"
+            await self._report("stopped")
             return f"stopped: {stop}"
         except ActivityError as error:
             # A step failed after all its retries: say so on the ticket, then
             # fail the run so it shows up as failed in Temporal.
             await self._comment(key, f"Agent failed at {self._stage}: {error.cause or error}")
-            self._stage = "failed"
+            await self._report("failed")
             raise
 
     async def _ready_ticket(self, key: str) -> Ticket:
         """Definition of ready: no spec until the ticket has what it needs."""
-        self._stage = "checking readiness"
+        await self._report("checking readiness")
         for _ in range(MAX_QUESTION_ROUNDS):
             ticket = await workflow.execute_activity_method(Activities.read_ticket, key, **QUICK)
             readiness = await workflow.execute_activity_method(Activities.check_readiness, ticket, **MODEL)
@@ -143,7 +179,7 @@ class TicketWorkflow:
                 "**Next step:** answer in a comment, then move the ticket back to **Ready for agent**.",
             )
             await self._move(key, NEEDS_INFO)
-            self._stage = "waiting for info"
+            await self._report("waiting for info")
             await self._wait_for_ready("no answer to the questions")
         raise Stopped(f"still not ready after {MAX_QUESTION_ROUNDS} rounds of questions")
 
@@ -151,11 +187,11 @@ class TicketWorkflow:
         """Drafts the spec on the ticket; a move back to "Ready for agent"
         means changes were requested in the comments, so it redrafts."""
         for _ in range(MAX_SPEC_DRAFTS):
-            self._stage = "drafting spec"
+            await self._report("drafting spec")
             spec = await workflow.execute_activity_method(Activities.draft_spec, ticket, **MODEL)
             await self._comment(ticket.key, spec_comment(spec))
             await self._move(ticket.key, SPEC_REVIEW)
-            self._stage = "waiting for spec approval"
+            await self._report("waiting for spec approval")
             seen = self._ready_signals
             reviewed = lambda seen=seen: self._approved or self._ready_signals > seen  # noqa: E731
             await self._wait(reviewed, "the spec was not reviewed")
@@ -165,7 +201,7 @@ class TicketWorkflow:
         raise Stopped(f"spec not approved after {MAX_SPEC_DRAFTS} drafts")
 
     async def _write_tests(self, ticket: Ticket, spec: Spec) -> WrittenTests:
-        self._stage = "writing tests"
+        await self._report("writing tests")
         branch = f"feature/{ticket.key}"
         return await workflow.execute_activity_method(
             Activities.write_tests, WriteTestsInput(ticket, spec, branch), **AGENT_RUN
@@ -175,7 +211,7 @@ class TicketWorkflow:
         """The repository's CI is the source of truth; its failures go back to
         the agent, which pushes a fix to the same PR, at most MAX_CI_FIXES times."""
         for attempt in range(1 + MAX_CI_FIXES):
-            self._stage = "waiting for CI"
+            await self._report("waiting for CI")
             checks = await workflow.execute_activity_method(Activities.wait_for_checks, implementation, **CI_WAIT)
             if checks.passed:
                 return
@@ -191,11 +227,11 @@ class TicketWorkflow:
         """Local gates first, cheap and deterministic; their failures go back
         to the agent, at most MAX_FIX_ATTEMPTS times."""
         for _ in range(1 + MAX_FIX_ATTEMPTS):
-            self._stage = "implementing"
+            await self._report("implementing")
             implementation = await workflow.execute_activity_method(
                 Activities.implement, ImplementInput(ticket, spec, tests, feedback), **AGENT_RUN
             )
-            self._stage = "running gates"
+            await self._report("running gates")
             report = await workflow.execute_activity_method(
                 Activities.run_gates, GatesInput(implementation, tests), **AGENT_RUN
             )
@@ -214,6 +250,17 @@ class TicketWorkflow:
             await workflow.wait_condition(condition, timeout=HUMAN_WAIT)
         except TimeoutError:
             raise Stopped(f"{reason} within {HUMAN_WAIT.days} days") from None
+
+    async def _report(self, stage: str) -> None:
+        """Sets the stage and updates the progress comment on the ticket, so
+        the person watching Jira sees which step runs without opening Temporal."""
+        if stage == "implementing":
+            self._attempts += 1
+        self._stage = stage
+        if stage in STEP_OF:
+            self._reached = STEP_OF[stage]
+        body = progress_comment(self._reached, stage, self._attempts)
+        await workflow.execute_activity_method(Activities.update_progress, Comment(self._key, body), **QUICK)
 
     async def _comment(self, key: str, body: str) -> None:
         signed = f"**ticket-to-pr agent** · {self._stage}\n{body}"

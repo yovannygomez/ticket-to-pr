@@ -101,6 +101,19 @@ class JiraTracker:
     async def comment(self, key: str, body: str) -> None:
         (await self.http.post(f"/issue/{key}/comment", json={"body": text_to_adf(body)})).raise_for_status()
 
+    async def upsert_progress(self, key: str, body: str) -> None:
+        """One progress comment per ticket, edited in place: found by its
+        heading, which is the body's first line."""
+        marker = body.splitlines()[0].lstrip("# ").strip()
+        comments = (await self.http.get(f"/issue/{key}/comment")).raise_for_status().json()["comments"]
+        existing = next((c for c in comments if adf_to_text(c["body"]).strip().startswith(marker)), None)
+        if existing:
+            (
+                await self.http.put(f"/issue/{key}/comment/{existing['id']}", json={"body": text_to_adf(body)})
+            ).raise_for_status()
+        else:
+            await self.comment(key, body)
+
     async def move(self, key: str, status: str) -> None:
         """Idempotent: already in `status` is fine, so a retry doesn't fail."""
         issue = (await self.http.get(f"/issue/{key}", params={"fields": "status"})).raise_for_status()

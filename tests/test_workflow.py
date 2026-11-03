@@ -70,6 +70,8 @@ async def test_happy_path_opens_a_pull_request(env: WorkflowEnvironment):
         await handle.signal(TicketWorkflow.spec_approved)
         url = await handle.result()
 
+    progress = pipeline.tracker.progress[KEY]
+    assert progress.count("✅") == 8 and "⏳" not in progress
     assert url.endswith("/pull/1")
     assert pipeline.statuses() == [SPEC_REVIEW, AGENT_WORKING, IN_REVIEW]
     assert pipeline.repository.handed == [1]
@@ -133,6 +135,7 @@ async def test_gives_up_when_the_gates_keep_failing(env: WorkflowEnvironment):
         result = await handle.result()
 
     assert result.startswith("stopped: gates still failing")
+    assert "⛔ Local gates passed" in pipeline.tracker.progress[KEY]
     assert len(pipeline.agent.implementations) == 3
     assert pipeline.repository.opened == []
 

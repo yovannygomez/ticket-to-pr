@@ -55,6 +55,7 @@ class Activities:
             self.read_ticket,
             self.comment,
             self.move_ticket,
+            self.update_progress,
             self.check_readiness,
             self.draft_spec,
             self.write_tests,
@@ -72,6 +73,10 @@ class Activities:
     @activity.defn
     async def comment(self, request: Comment) -> None:
         await self.tracker.comment(request.key, request.body)
+
+    @activity.defn
+    async def update_progress(self, request: Comment) -> None:
+        await self.tracker.upsert_progress(request.key, request.body)
 
     @activity.defn
     async def move_ticket(self, request: Move) -> None:
