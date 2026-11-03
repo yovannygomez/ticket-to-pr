@@ -106,6 +106,7 @@ step an edit to `app/` succeeds and an edit to `tests/` is refused.
 
 - The AWS deployment in [0005](docs/adr/0005-production-on-aws.md) is written in Terraform in [`infra/`](infra/) and validated, not applied; the Fargate sandbox adapter is the code still to write.
 - The agent comments with the token owner's Jira account; in a team it gets its own service account.
+- Review comments on the PR going back to the agent: today the run ends when the PR is handed to the reviewer. Next: keep the workflow open, turn "changes requested" into a signal, fix on the same PR, and end on merge.
 - A Bitbucket adapter (the interfaces are ready for it).
 
 ## License
