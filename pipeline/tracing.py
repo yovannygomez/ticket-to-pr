@@ -24,8 +24,23 @@ class _NoOp:
 
 
 @contextmanager
+def step(ticket: str, name: str, prompt: str):
+    """A step that calls the Anthropic SDK. The SDK call itself is traced
+    automatically (as a generation with tokens and cost) and lands inside
+    this span; a generation here too would count the cost twice."""
+    if _client is None:
+        yield _NoOp()
+        return
+    with propagate_attributes(session_id=ticket, tags=["ticket-to-pr"]):
+        with _client.start_as_current_observation(as_type="span", name=name, input=prompt) as obs:
+            yield obs
+    _client.flush()
+
+
+@contextmanager
 def generation(ticket: str, name: str, model: str, prompt: str):
-    """One model call. The caller reports output, usage and cost with
+    """A model call nothing else traces (Claude Code in the sandbox). The
+    caller reports output, usage and cost with
     `.update(output=..., usage_details={...}, cost_details={...})`."""
     if _client is None:
         yield _NoOp()

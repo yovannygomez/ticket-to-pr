@@ -63,7 +63,7 @@ class ClaudeAgent:
         self.strong_model = strong_model
 
     async def _structured(self, ticket: str, name: str, model: str, schema: dict, prompt: str) -> dict:
-        with tracing.generation(ticket, name, model, prompt) as observation:
+        with tracing.step(ticket, name, prompt) as observation:
             response = await self.client.messages.create(
                 model=model,
                 max_tokens=8000,
@@ -71,10 +71,7 @@ class ClaudeAgent:
                 messages=[{"role": "user", "content": prompt}],
             )
             answer = json.loads(next(block.text for block in response.content if block.type == "text"))
-            observation.update(
-                output=answer,
-                usage_details={"input": response.usage.input_tokens, "output": response.usage.output_tokens},
-            )
+            observation.update(output=answer)
         return answer
 
     async def check_readiness(self, ticket: Ticket) -> Readiness:
