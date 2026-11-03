@@ -27,24 +27,44 @@ def adf_to_text(node: dict | list | None) -> str:
     return inner
 
 
+INLINE = re.compile(r"(`[^`]+`|\*\*[^*]+\*\*)")
+
+
+def inline(text: str) -> list[dict]:
+    """`code` and **bold** spans as ADF marks; everything else plain text."""
+    nodes = []
+    for part in INLINE.split(text):
+        if not part:
+            continue
+        if part.startswith("`") and part.endswith("`"):
+            nodes.append({"type": "text", "text": part[1:-1], "marks": [{"type": "code"}]})
+        elif part.startswith("**") and part.endswith("**"):
+            nodes.append({"type": "text", "text": part[2:-2], "marks": [{"type": "strong"}]})
+        else:
+            nodes.append({"type": "text", "text": part})
+    return nodes
+
+
 def text_to_adf(text: str) -> dict:
-    """Plain text (or simple markdown) to ADF: one paragraph per line,
-    `#` lines as headings."""
-    content = []
+    """Simple markdown to ADF: `#` headings, `-` bullet lists, paragraphs,
+    with `code` and **bold** inside them."""
+    content: list[dict] = []
     for line in text.splitlines():
         if not line.strip():
             continue
         heading = re.match(r"^(#{1,6})\s+(.*)", line)
+        bullet = re.match(r"^\s*[-*]\s+(.*)", line)
         if heading:
-            content.append(
-                {
-                    "type": "heading",
-                    "attrs": {"level": len(heading.group(1))},
-                    "content": [{"type": "text", "text": heading.group(2)}],
-                }
-            )
+            level = min(len(heading.group(1)) + 1, 6)  # the comment's own title stays smaller than the page's
+            content.append({"type": "heading", "attrs": {"level": level}, "content": inline(heading.group(2))})
+        elif bullet:
+            item = {"type": "listItem", "content": [{"type": "paragraph", "content": inline(bullet.group(1))}]}
+            if content and content[-1]["type"] == "bulletList":
+                content[-1]["content"].append(item)
+            else:
+                content.append({"type": "bulletList", "content": [item]})
         else:
-            content.append({"type": "paragraph", "content": [{"type": "text", "text": line}]})
+            content.append({"type": "paragraph", "content": inline(line)})
     return {"type": "doc", "version": 1, "content": content}
 
 

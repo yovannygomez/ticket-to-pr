@@ -33,7 +33,10 @@ SPEC_SCHEMA = {
     "properties": {
         "markdown": {
             "type": "string",
-            "description": "Sections: Goal, Behavior, Edge cases, Out of scope, Acceptance tests.",
+            "description": (
+                "Markdown with ## headings: Goal, Behavior, Edge cases, Out of scope. "
+                "The acceptance tests go only in acceptance_tests, not here."
+            ),
         },
         "acceptance_tests": {
             "type": "array",

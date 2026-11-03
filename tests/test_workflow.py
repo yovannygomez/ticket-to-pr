@@ -83,6 +83,7 @@ async def test_ticket_without_criteria_asks_before_writing_a_spec(env: WorkflowE
         handle = await pipeline.start()
         await pipeline.wait_for_stage(handle, "waiting for info")
         assert "acceptance criteria" in pipeline.tracker.comments[-1][1]
+        assert "move the ticket back to **Ready for agent**" in pipeline.tracker.comments[-1][1]
 
         ticket.acceptance_criteria.append("Search answers in under 300 ms at p95")
         await handle.signal(TicketWorkflow.ready_for_agent)
@@ -105,7 +106,7 @@ async def test_changes_requested_redrafts_the_spec(env: WorkflowEnvironment):
         await handle.signal(TicketWorkflow.spec_approved)
         await handle.result()
 
-    specs = [body for _, body in pipeline.tracker.comments if body.startswith(f"# {KEY}")]
+    specs = [body for _, body in pipeline.tracker.comments if "## Spec ready for review" in body]
     assert len(specs) == 2
     assert "Prices are in cents" in specs[1]
 
@@ -145,7 +146,7 @@ async def test_unreviewed_spec_stops_after_seven_days(env: WorkflowEnvironment):
         result = await handle.result()
 
     assert result == "stopped: the spec was not reviewed within 7 days"
-    assert pipeline.tracker.comments[-1][1].startswith("Agent stopped:")
+    assert "Agent stopped: the spec was not reviewed" in pipeline.tracker.comments[-1][1]
 
 
 async def test_ci_failure_goes_back_to_the_agent_on_the_same_pull_request(env: WorkflowEnvironment):

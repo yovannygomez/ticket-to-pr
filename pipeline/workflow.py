@@ -66,6 +66,16 @@ CI_WAIT = dict(
 )
 
 
+def spec_comment(spec: Spec) -> str:
+    tests = "\n".join(f"- {test}" for test in spec.acceptance_tests)
+    return (
+        "## Spec ready for review\n"
+        "**To approve:** move the ticket to **Spec approved**. "
+        "**To change it:** comment what to change, then move it back to **Ready for agent**.\n"
+        f"{spec.markdown}\n## Acceptance tests\n{tests}"
+    )
+
+
 class Stopped(Exception):
     """The workflow ends early and says why on the ticket."""
 
@@ -127,7 +137,11 @@ class TicketWorkflow:
             if readiness.ready:
                 return ticket
             questions = "\n".join(f"- {question}" for question in readiness.questions)
-            await self._comment(key, f"Before I can write a spec, I need:\n{questions}")
+            await self._comment(
+                key,
+                f"## Questions before the spec\n{questions}\n"
+                "**Next step:** answer in a comment, then move the ticket back to **Ready for agent**.",
+            )
             await self._move(key, NEEDS_INFO)
             self._stage = "waiting for info"
             await self._wait_for_ready("no answer to the questions")
@@ -139,7 +153,7 @@ class TicketWorkflow:
         for _ in range(MAX_SPEC_DRAFTS):
             self._stage = "drafting spec"
             spec = await workflow.execute_activity_method(Activities.draft_spec, ticket, **MODEL)
-            await self._comment(ticket.key, spec.markdown)
+            await self._comment(ticket.key, spec_comment(spec))
             await self._move(ticket.key, SPEC_REVIEW)
             self._stage = "waiting for spec approval"
             seen = self._ready_signals
@@ -202,7 +216,8 @@ class TicketWorkflow:
             raise Stopped(f"{reason} within {HUMAN_WAIT.days} days") from None
 
     async def _comment(self, key: str, body: str) -> None:
-        await workflow.execute_activity_method(Activities.comment, Comment(key, body), **QUICK)
+        signed = f"**ticket-to-pr agent** · {self._stage}\n{body}"
+        await workflow.execute_activity_method(Activities.comment, Comment(key, signed), **QUICK)
 
     async def _move(self, key: str, status: str) -> None:
         await workflow.execute_activity_method(Activities.move_ticket, Move(key, status), **QUICK)
