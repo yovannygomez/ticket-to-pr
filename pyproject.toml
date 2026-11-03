@@ -1,0 +1,32 @@
+[project]
+name = "ticket-to-pr"
+version = "0.1.0"
+description = "A durable ticket-to-pull-request pipeline: Temporal orchestrates, an agent writes the code, deterministic gates decide."
+requires-python = ">=3.12"
+dependencies = [
+    "temporalio==1.35.0",
+    "fastapi==0.162.0",
+    "uvicorn==0.54.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.2.0",
+    "pytest-asyncio==1.4.1.post1",
+    "httpx==0.28.1",
+    "ruff==0.17.3",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.setuptools]
+packages = ["pipeline", "pipeline.adapters"]
