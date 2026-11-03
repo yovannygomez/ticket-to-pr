@@ -1,11 +1,12 @@
 """The agent: Claude for the reasoning steps, Claude Code for the code.
 
-Readiness and the spec are single API calls with a forced tool, so the
-answer comes back as validated JSON. Tests and implementation are Claude
+Readiness and the spec are single API calls with structured output, so the
+answer comes back as JSON that matches a schema. Tests and implementation are Claude
 Code runs in the sandbox, each with its own permissions: the tests step
 can't touch the app, the implement step can't touch the tests.
 """
 
+import json
 from pathlib import Path
 
 from anthropic import AsyncAnthropic
@@ -17,37 +18,31 @@ from pipeline.models import Implementation, ImplementInput, Readiness, Spec, Tic
 
 TESTS_COMMIT = "tests from acceptance criteria"
 
-READINESS_TOOL = {
-    "name": "readiness",
-    "description": "Whether the ticket can be turned into a spec without guessing.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "ready": {"type": "boolean"},
-            "questions": {"type": "array", "items": {"type": "string"}},
-        },
-        "required": ["ready", "questions"],
+READINESS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "ready": {"type": "boolean"},
+        "questions": {"type": "array", "items": {"type": "string"}},
     },
+    "required": ["ready", "questions"],
+    "additionalProperties": False,
 }
 
-SPEC_TOOL = {
-    "name": "spec",
-    "description": "The spec for the ticket.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "markdown": {
-                "type": "string",
-                "description": "Sections: Goal, Behavior, Edge cases, Out of scope, Acceptance tests.",
-            },
-            "acceptance_tests": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Each one a concrete, testable case: input and expected result.",
-            },
+SPEC_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "markdown": {
+            "type": "string",
+            "description": "Sections: Goal, Behavior, Edge cases, Out of scope, Acceptance tests.",
         },
-        "required": ["markdown", "acceptance_tests"],
+        "acceptance_tests": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Each one a concrete, testable case: input and expected result.",
+        },
     },
+    "required": ["markdown", "acceptance_tests"],
+    "additionalProperties": False,
 }
 
 
@@ -64,16 +59,15 @@ class ClaudeAgent:
         self.fast_model = fast_model
         self.strong_model = strong_model
 
-    async def _tool_call(self, ticket: str, name: str, model: str, tool: dict, prompt: str) -> dict:
+    async def _structured(self, ticket: str, name: str, model: str, schema: dict, prompt: str) -> dict:
         with tracing.generation(ticket, name, model, prompt) as observation:
             response = await self.client.messages.create(
                 model=model,
-                max_tokens=4000,
-                tools=[tool],
-                tool_choice={"type": "tool", "name": tool["name"]},
+                max_tokens=8000,
+                output_config={"format": {"type": "json_schema", "schema": schema}},
                 messages=[{"role": "user", "content": prompt}],
             )
-            answer = next(block.input for block in response.content if block.type == "tool_use")
+            answer = json.loads(next(block.text for block in response.content if block.type == "text"))
             observation.update(
                 output=answer,
                 usage_details={"input": response.usage.input_tokens, "output": response.usage.output_tokens},
@@ -86,16 +80,23 @@ class ClaudeAgent:
             "criteria are specific enough to test without guessing. If it isn't, ask the fewest questions "
             f"that would make it ready.\n\n{describe(ticket)}"
         )
-        answer = await self._tool_call(ticket.key, "check_readiness", self.fast_model, READINESS_TOOL, prompt)
+        answer = await self._structured(ticket.key, "check_readiness", self.fast_model, READINESS_SCHEMA, prompt)
         return Readiness(ready=answer["ready"], questions=answer["questions"])
+
+    async def _code_context(self, key: str) -> str:
+        """The repository's current code, so the spec refers to real names and data."""
+        path = await self.workspace.prepare(key, f"feature/{key}")
+        files = sorted(path.glob("app/*.py")) + [path / "tests/conftest.py"]
+        return "\n\n".join(f"--- {file.relative_to(path)}\n{file.read_text()}" for file in files if file.exists())
 
     async def draft_spec(self, ticket: Ticket) -> Spec:
         prompt = (
-            "Write the spec for this ticket in a small FastAPI service (listings with title, category, "
-            "price_cents as an integer, city). Be concrete and short. If the comments request changes to an "
-            "earlier spec, apply them. List what is out of scope.\n\n" + describe(ticket)
+            "Write the spec for this ticket. Be concrete and short, use the names and seed data in the code "
+            "below, and never invent records that aren't there. If the comments answer questions or request "
+            "changes to an earlier spec, apply them. List what is out of scope.\n\n"
+            f"{describe(ticket)}\n\nCurrent code on main:\n{await self._code_context(ticket.key)}"
         )
-        answer = await self._tool_call(ticket.key, "draft_spec", self.strong_model, SPEC_TOOL, prompt)
+        answer = await self._structured(ticket.key, "draft_spec", self.strong_model, SPEC_SCHEMA, prompt)
         return Spec(markdown=answer["markdown"], acceptance_tests=answer["acceptance_tests"])
 
     async def write_tests(self, request: WriteTestsInput) -> WrittenTests:

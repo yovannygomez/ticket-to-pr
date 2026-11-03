@@ -17,6 +17,7 @@ from datetime import timedelta
 
 from temporalio import workflow
 from temporalio.common import RetryPolicy
+from temporalio.exceptions import ActivityError
 
 with workflow.unsafe.imports_passed_through():
     from pipeline.activities import Activities
@@ -110,6 +111,12 @@ class TicketWorkflow:
             await self._comment(key, f"Agent stopped: {stop}")
             self._stage = "stopped"
             return f"stopped: {stop}"
+        except ActivityError as error:
+            # A step failed after all its retries: say so on the ticket, then
+            # fail the run so it shows up as failed in Temporal.
+            await self._comment(key, f"Agent failed at {self._stage}: {error.cause or error}")
+            self._stage = "failed"
+            raise
 
     async def _ready_ticket(self, key: str) -> Ticket:
         """Definition of ready: no spec until the ticket has what it needs."""
