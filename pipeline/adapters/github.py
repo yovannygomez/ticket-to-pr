@@ -98,24 +98,33 @@ class GitHubRepository:
         return PullRequest(number=pull["number"], url=pull["html_url"])
 
     async def wait_for_checks(self, implementation: Implementation) -> CheckReport:
-        """Polls the check runs on the pushed commit until all have finished.
-        A failure comes back with the tail of each failed job's log, which is
-        what the agent gets to fix it."""
+        """Polls the GitHub Actions runs on the pushed commit until all have
+        finished (Actions API: fine-grained tokens can read it; the Checks API
+        is for GitHub Apps). A failure comes back with the tail of each failed
+        job's log, which is what the agent gets to fix it."""
         sha = implementation.commit_sha
         for poll in range(10_000):
-            runs = (await self.http.get(f"/commits/{sha}/check-runs")).raise_for_status().json()["check_runs"]
+            runs = (await self.http.get("/actions/runs", params={"head_sha": sha})).raise_for_status().json()
+            runs = runs["workflow_runs"]
             if not runs and poll >= CI_START_GRACE_POLLS:
                 return CheckReport(passed=False, failures=[f"no CI run started for {sha[:7]}"])
             if runs and all(run["status"] == "completed" for run in runs):
                 failed = [run for run in runs if run["conclusion"] not in ("success", "skipped", "neutral")]
-                return CheckReport(passed=not failed, failures=[await self._failure(run) for run in failed])
+                failures = [failure for run in failed for failure in await self._failures(run)]
+                return CheckReport(passed=not failed, failures=failures)
             await asyncio.sleep(CI_POLL_SECONDS)
         raise TimeoutError(sha)
 
-    async def _failure(self, run: dict) -> str:
-        log = await self.http.get(f"/actions/jobs/{run['id']}/logs")
-        lines = log.text.splitlines()[-40:] if log.status_code == 200 else [f"(log unavailable: {log.status_code})"]
-        return f"CI check '{run['name']}' {run['conclusion']}:\n" + "\n".join(lines)
+    async def _failures(self, run: dict) -> list[str]:
+        jobs = (await self.http.get(f"/actions/runs/{run['id']}/jobs")).raise_for_status().json()["jobs"]
+        failures = []
+        for job in jobs:
+            if job["conclusion"] in ("success", "skipped", "neutral"):
+                continue
+            log = await self.http.get(f"/actions/jobs/{job['id']}/logs")
+            lines = log.text.splitlines()[-40:] if log.status_code == 200 else [f"(log unavailable: {log.status_code})"]
+            failures.append(f"CI job '{run['name']} / {job['name']}' {job['conclusion']}:\n" + "\n".join(lines))
+        return failures or [f"CI run '{run['name']}' {run['conclusion']}"]
 
     async def hand_to_reviewer(self, pull_request: PullRequest) -> None:
         """Out of draft (GraphQL only), then assigned to the reviewer. A
