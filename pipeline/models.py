@@ -57,6 +57,14 @@ class PullRequest:
 
 
 @dataclass
+class CheckReport:
+    """The repository's CI on one commit: passed, or what failed with a log tail."""
+
+    passed: bool
+    failures: list[str] = field(default_factory=list)
+
+
+@dataclass
 class Comment:
     key: str
     body: str

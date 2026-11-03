@@ -8,7 +8,9 @@ Two human checkpoints, both driven by moving the ticket in the tracker:
   - "Ready for agent" -> signal `ready_for_agent` (start, answered questions,
     or changes requested on the spec)
   - "Spec approved"   -> signal `spec_approved`
-The second checkpoint, the PR review, happens in the repository.
+The second checkpoint, the PR review, happens in the repository: the PR
+opens as a draft, the repository's CI must pass (failures go back to the
+agent), and only then is it marked ready and handed to the reviewer.
 """
 
 from datetime import timedelta
@@ -41,6 +43,7 @@ HUMAN_WAIT = timedelta(days=7)
 MAX_QUESTION_ROUNDS = 3
 MAX_SPEC_DRAFTS = 3
 MAX_FIX_ATTEMPTS = 2
+MAX_CI_FIXES = 2
 
 QUICK = dict(
     start_to_close_timeout=timedelta(seconds=30),
@@ -52,6 +55,11 @@ MODEL = dict(
 )
 AGENT_RUN = dict(
     start_to_close_timeout=timedelta(hours=1),
+    heartbeat_timeout=timedelta(minutes=2),
+    retry_policy=RetryPolicy(maximum_attempts=3),
+)
+CI_WAIT = dict(
+    start_to_close_timeout=timedelta(minutes=30),
     heartbeat_timeout=timedelta(minutes=2),
     retry_policy=RetryPolicy(maximum_attempts=3),
 )
@@ -87,11 +95,14 @@ class TicketWorkflow:
             spec = await self._approved_spec(ticket)
             await self._move(key, AGENT_WORKING)
             tests = await self._write_tests(ticket, spec)
-            implementation, report = await self._implement_until_green(ticket, spec, tests)
+            implementation, report = await self._implement_until_green(ticket, spec, tests, [])
             pull_request = await workflow.execute_activity_method(
                 Activities.open_pull_request, PullRequestInput(ticket, spec, implementation, report), **QUICK
             )
-            await self._comment(key, f"Pull request ready for review: {pull_request.url}")
+            await self._comment(key, f"Draft pull request opened, waiting for CI: {pull_request.url}")
+            await self._ci_until_green(ticket, spec, tests, implementation)
+            await workflow.execute_activity_method(Activities.hand_to_reviewer, pull_request, **QUICK)
+            await self._comment(key, f"CI passed. Pull request ready for review: {pull_request.url}")
             await self._move(key, IN_REVIEW)
             self._stage = "done"
             return pull_request.url
@@ -139,11 +150,25 @@ class TicketWorkflow:
             Activities.write_tests, WriteTestsInput(ticket, spec, branch), **AGENT_RUN
         )
 
+    async def _ci_until_green(self, ticket: Ticket, spec: Spec, tests: WrittenTests, implementation) -> None:
+        """The repository's CI is the source of truth; its failures go back to
+        the agent, which pushes a fix to the same PR, at most MAX_CI_FIXES times."""
+        for attempt in range(1 + MAX_CI_FIXES):
+            self._stage = "waiting for CI"
+            checks = await workflow.execute_activity_method(Activities.wait_for_checks, implementation, **CI_WAIT)
+            if checks.passed:
+                return
+            if attempt == MAX_CI_FIXES:
+                failures = "\n".join(f"- {failure}" for failure in checks.failures)
+                raise Stopped(f"CI still failing after {MAX_CI_FIXES} fixes:\n{failures}")
+            await self._comment(ticket.key, "CI failed; the agent is fixing it on the same pull request.")
+            implementation, _ = await self._implement_until_green(ticket, spec, tests, checks.failures)
+
     async def _implement_until_green(
-        self, ticket: Ticket, spec: Spec, tests: WrittenTests
+        self, ticket: Ticket, spec: Spec, tests: WrittenTests, feedback: list[str]
     ) -> tuple[Implementation, GateReport]:
-        """The agent gets the gate failures back, at most MAX_FIX_ATTEMPTS times."""
-        feedback: list[str] = []
+        """Local gates first, cheap and deterministic; their failures go back
+        to the agent, at most MAX_FIX_ATTEMPTS times."""
         for _ in range(1 + MAX_FIX_ATTEMPTS):
             self._stage = "implementing"
             implementation = await workflow.execute_activity_method(

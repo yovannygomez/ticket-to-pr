@@ -10,7 +10,7 @@ test:
 	.venv/bin/pytest -q
 
 up:
-	docker compose up -d
+	docker compose up -d && docker build -q -t ticket-to-pr-sandbox:dev sandbox
 
 down:
 	docker compose stop

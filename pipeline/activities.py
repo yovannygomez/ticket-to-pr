@@ -13,6 +13,7 @@ from temporalio import activity
 
 from pipeline.adapters.base import Agent, Gates, Repository, Tracker
 from pipeline.models import (
+    CheckReport,
     Comment,
     GateReport,
     GatesInput,
@@ -60,6 +61,8 @@ class Activities:
             self.implement,
             self.run_gates,
             self.open_pull_request,
+            self.wait_for_checks,
+            self.hand_to_reviewer,
         ]
 
     @activity.defn
@@ -97,3 +100,11 @@ class Activities:
     @activity.defn
     async def open_pull_request(self, request: PullRequestInput) -> PullRequest:
         return await self.repository.open_pull_request(request)
+
+    @activity.defn
+    async def wait_for_checks(self, implementation: Implementation) -> CheckReport:
+        return await _with_heartbeat(self.repository.wait_for_checks(implementation))
+
+    @activity.defn
+    async def hand_to_reviewer(self, pull_request: PullRequest) -> None:
+        await self.repository.hand_to_reviewer(pull_request)

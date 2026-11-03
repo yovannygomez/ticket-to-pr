@@ -8,6 +8,7 @@ change to the workflow.
 from typing import Protocol
 
 from pipeline.models import (
+    CheckReport,
     GateReport,
     GatesInput,
     Implementation,
@@ -41,3 +42,5 @@ class Gates(Protocol):
 
 class Repository(Protocol):
     async def open_pull_request(self, request: PullRequestInput) -> PullRequest: ...
+    async def wait_for_checks(self, implementation: Implementation) -> CheckReport: ...
+    async def hand_to_reviewer(self, pull_request: PullRequest) -> None: ...

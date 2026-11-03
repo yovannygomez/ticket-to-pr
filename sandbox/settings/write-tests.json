@@ -1,0 +1,6 @@
+{
+  "permissions": {
+    "allow": ["Read", "Glob", "Grep", "Edit(./tests/**)", "Write(./tests/**)", "Bash(python -m pytest:*)", "Bash(pytest:*)"],
+    "deny": ["Edit(./app/**)", "Write(./app/**)", "Edit(./.github/**)", "Write(./.github/**)", "WebFetch", "WebSearch"]
+  }
+}

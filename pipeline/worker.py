@@ -5,6 +5,8 @@ the model), so it needs no inbound ports.
 """
 
 import asyncio
+import os
+from pathlib import Path
 
 from temporalio.client import Client
 from temporalio.worker import Worker
@@ -19,6 +21,27 @@ def build_activities(settings: Settings) -> Activities:
         from pipeline.adapters.fake import FakeAgent, FakeGates, FakeRepository, FakeTracker
 
         return Activities(FakeTracker(), FakeAgent(), FakeGates(), FakeRepository())
+    if settings.adapters == "real":
+        from pipeline.adapters.claude import ClaudeAgent
+        from pipeline.adapters.github import GitHubRepository, Workspace
+        from pipeline.adapters.jira import JiraTracker
+        from pipeline.adapters.sandbox import Sandbox, SandboxGates
+
+        env = os.environ
+        workspace = Workspace(Path(env["WORKSPACES_DIR"]).expanduser(), env["GITHUB_REPOSITORY"], env["GITHUB_TOKEN"])
+        sandbox = Sandbox(env.get("SANDBOX_IMAGE", "ticket-to-pr-sandbox:dev"), env["ANTHROPIC_API_KEY"])
+        return Activities(
+            JiraTracker(env["JIRA_BASE_URL"], env["JIRA_EMAIL"], env["JIRA_API_TOKEN"]),
+            ClaudeAgent(
+                env["ANTHROPIC_API_KEY"],
+                workspace,
+                sandbox,
+                fast_model=env.get("FAST_MODEL", "claude-haiku-5-5"),
+                strong_model=env.get("STRONG_MODEL", "claude-sonnet-5-5"),
+            ),
+            SandboxGates(workspace, sandbox),
+            GitHubRepository(env["GITHUB_REPOSITORY"], env["GITHUB_TOKEN"], env["REVIEWER"]),
+        )
     raise ValueError(f"unknown ADAPTERS={settings.adapters!r}")
 
 

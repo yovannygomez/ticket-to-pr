@@ -1,0 +1,93 @@
+"""Jira Cloud REST API v3: read the ticket, comment on it, move it."""
+
+import re
+
+import httpx
+
+from pipeline.models import Ticket
+
+CRITERIA_HEADING = re.compile(r"^\s*acceptance criteria\s*:?\s*$", re.IGNORECASE)
+
+
+def adf_to_text(node: dict | list | None) -> str:
+    """Atlassian Document Format to plain text, one line per block."""
+    if node is None:
+        return ""
+    if isinstance(node, list):
+        return "".join(adf_to_text(child) for child in node)
+    if node.get("type") == "text":
+        return node.get("text", "")
+    if node.get("type") == "hardBreak":
+        return "\n"
+    inner = adf_to_text(node.get("content"))
+    if node.get("type") == "listItem":
+        return f"- {inner.strip()}\n"
+    if node.get("type") in {"paragraph", "heading", "codeBlock"}:
+        return f"{inner}\n"
+    return inner
+
+
+def text_to_adf(text: str) -> dict:
+    """Plain text (or simple markdown) to ADF: one paragraph per line,
+    `#` lines as headings."""
+    content = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        heading = re.match(r"^(#{1,6})\s+(.*)", line)
+        if heading:
+            content.append(
+                {
+                    "type": "heading",
+                    "attrs": {"level": len(heading.group(1))},
+                    "content": [{"type": "text", "text": heading.group(2)}],
+                }
+            )
+        else:
+            content.append({"type": "paragraph", "content": [{"type": "text", "text": line}]})
+    return {"type": "doc", "version": 1, "content": content}
+
+
+def acceptance_criteria(description: str) -> list[str]:
+    """The bullets under an "Acceptance criteria" line, if there is one."""
+    criteria, inside = [], False
+    for line in description.splitlines():
+        if CRITERIA_HEADING.match(line):
+            inside = True
+        elif inside and line.strip().startswith(("-", "*")):
+            criteria.append(line.strip().lstrip("-* ").strip())
+        elif inside and line.strip():
+            break
+    return criteria
+
+
+class JiraTracker:
+    def __init__(self, base_url: str, email: str, token: str):
+        self.http = httpx.AsyncClient(base_url=f"{base_url}/rest/api/3", auth=(email, token), timeout=20)
+
+    async def get_ticket(self, key: str) -> Ticket:
+        issue = (await self.http.get(f"/issue/{key}", params={"fields": "summary,description"})).raise_for_status()
+        comments = (await self.http.get(f"/issue/{key}/comment")).raise_for_status()
+        fields = issue.json()["fields"]
+        description = adf_to_text(fields.get("description")).strip()
+        return Ticket(
+            key=key,
+            title=fields["summary"],
+            description=description,
+            acceptance_criteria=acceptance_criteria(description),
+            comments=[adf_to_text(comment["body"]).strip() for comment in comments.json()["comments"]],
+        )
+
+    async def comment(self, key: str, body: str) -> None:
+        (await self.http.post(f"/issue/{key}/comment", json={"body": text_to_adf(body)})).raise_for_status()
+
+    async def move(self, key: str, status: str) -> None:
+        """Idempotent: already in `status` is fine, so a retry doesn't fail."""
+        issue = (await self.http.get(f"/issue/{key}", params={"fields": "status"})).raise_for_status()
+        if issue.json()["fields"]["status"]["name"] == status:
+            return
+        transitions = (await self.http.get(f"/issue/{key}/transitions")).raise_for_status().json()["transitions"]
+        match = next((t for t in transitions if t["to"]["name"] == status), None)
+        if match is None:
+            raise ValueError(f"{key}: no transition to {status!r}")
+        (await self.http.post(f"/issue/{key}/transitions", json={"transition": {"id": match["id"]}})).raise_for_status()

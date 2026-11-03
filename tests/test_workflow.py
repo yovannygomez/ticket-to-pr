@@ -25,12 +25,18 @@ async def env():
 
 
 class Pipeline:
-    def __init__(self, client: Client, agent: FakeAgent | None = None, ticket: Ticket | None = None):
+    def __init__(
+        self,
+        client: Client,
+        agent: FakeAgent | None = None,
+        ticket: Ticket | None = None,
+        repository: FakeRepository | None = None,
+    ):
         self.client = client
         self.queue = f"tickets-{uuid.uuid4()}"
         self.tracker = FakeTracker(tickets={KEY: ticket} if ticket else {})
         self.agent = agent or FakeAgent()
-        self.repository = FakeRepository()
+        self.repository = repository or FakeRepository()
         self.activities = Activities(self.tracker, self.agent, FakeGates(), self.repository)
 
     def worker(self) -> Worker:
@@ -66,6 +72,7 @@ async def test_happy_path_opens_a_pull_request(env: WorkflowEnvironment):
 
     assert url.endswith("/pull/1")
     assert pipeline.statuses() == [SPEC_REVIEW, AGENT_WORKING, IN_REVIEW]
+    assert pipeline.repository.handed == [1]
     assert pipeline.repository.opened[0].report.passed
 
 
@@ -139,3 +146,30 @@ async def test_unreviewed_spec_stops_after_seven_days(env: WorkflowEnvironment):
 
     assert result == "stopped: the spec was not reviewed within 7 days"
     assert pipeline.tracker.comments[-1][1].startswith("Agent stopped:")
+
+
+async def test_ci_failure_goes_back_to_the_agent_on_the_same_pull_request(env: WorkflowEnvironment):
+    pipeline = Pipeline(env.client, repository=FakeRepository(failing_ci_runs=1))
+    async with pipeline.worker():
+        handle = await pipeline.start()
+        await pipeline.wait_for_stage(handle, "waiting for spec approval")
+        await handle.signal(TicketWorkflow.spec_approved)
+        await handle.result()
+
+    assert len(pipeline.repository.opened) == 1
+    assert pipeline.repository.ci_runs == ["impl001", "impl002"]
+    assert pipeline.agent.implementations[1].feedback == ["ci / test: ruff format --check would reformat app/main.py"]
+    assert pipeline.repository.handed == [1]
+
+
+async def test_never_hands_over_a_pull_request_with_red_ci(env: WorkflowEnvironment):
+    pipeline = Pipeline(env.client, repository=FakeRepository(failing_ci_runs=99))
+    async with pipeline.worker():
+        handle = await pipeline.start()
+        await pipeline.wait_for_stage(handle, "waiting for spec approval")
+        await handle.signal(TicketWorkflow.spec_approved)
+        result = await handle.result()
+
+    assert result.startswith("stopped: CI still failing")
+    assert pipeline.repository.handed == []
+    assert IN_REVIEW not in pipeline.statuses()

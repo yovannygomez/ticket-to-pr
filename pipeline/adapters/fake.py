@@ -7,6 +7,7 @@ records what it was asked to do, so a test can assert on it.
 from dataclasses import dataclass, field
 
 from pipeline.models import (
+    CheckReport,
     GateReport,
     GatesInput,
     Implementation,
@@ -90,7 +91,21 @@ class FakeGates:
 
 @dataclass
 class FakeRepository:
+    """CI fails on the first `failing_ci_runs` commits it sees."""
+
+    failing_ci_runs: int = 0
     opened: list[PullRequestInput] = field(default_factory=list)
+    ci_runs: list[str] = field(default_factory=list)
+    handed: list[int] = field(default_factory=list)
+
+    async def wait_for_checks(self, implementation: Implementation) -> CheckReport:
+        self.ci_runs.append(implementation.commit_sha)
+        if len(self.ci_runs) <= self.failing_ci_runs:
+            return CheckReport(passed=False, failures=["ci / test: ruff format --check would reformat app/main.py"])
+        return CheckReport(passed=True)
+
+    async def hand_to_reviewer(self, pull_request: PullRequest) -> None:
+        self.handed.append(pull_request.number)
 
     async def open_pull_request(self, request: PullRequestInput) -> PullRequest:
         self.opened.append(request)
