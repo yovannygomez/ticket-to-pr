@@ -9,3 +9,4 @@ __pycache__/
 *.tfstate
 *.tfstate.backup
 .idea/
+infra/terraform.tfvars

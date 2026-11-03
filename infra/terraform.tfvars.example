@@ -1,0 +1,5 @@
+# Copy to terraform.tfvars (git-ignored) and fill in.
+budget_email      = "you@example.com"
+github_repository = "yovannygomez/listings-api"
+reviewer          = "yovannygomez"
+jira_base_url     = "https://your-site.atlassian.net"
