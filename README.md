@@ -100,10 +100,11 @@ step an edit to `app/` succeeds and an edit to `tests/` is refused.
 | `pipeline/receiver.py` | Jira webhook → one Temporal call → 200. |
 | `pipeline/poller.py` | Local stand-in for the webhook. |
 | `sandbox/` | The sandbox image, its per-step permissions, and the gates. |
+| `infra/`, `deploy/` | The AWS design in Terraform (not applied) and the worker and receiver images. |
 
 ## Not done yet
 
-- The AWS deployment in [0005](docs/adr/0005-production-on-aws.md) is designed, not applied.
+- The AWS deployment in [0005](docs/adr/0005-production-on-aws.md) is written in Terraform in [`infra/`](infra/) and validated, not applied; the Fargate sandbox adapter is the code still to write.
 - The agent comments with the token owner's Jira account; in a team it gets its own service account.
 - A Bitbucket adapter (the interfaces are ready for it).
 
