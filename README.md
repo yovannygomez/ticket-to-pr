@@ -6,7 +6,25 @@ throwaway sandbox, **deterministic gates** and the repository's **CI** decide
 what gets through, and **LangFuse** shows what every step cost. People stay
 in charge at two points: they approve the spec, and they review the PR.
 
-<!-- demo video: drag the MP4 into this spot in GitHub's web editor -->
+## Demo
+
+**[Watch the demo (14 min)](docs/demo.mp4)**: two Jira tickets run in parallel, one
+stops to ask questions before its spec, and each ends with its own pull
+request with CI green: [#5](https://github.com/yovannygomez/listings-api/pull/5)
+and [#6](https://github.com/yovannygomez/listings-api/pull/6).
+
+| Time | What you see |
+|---|---|
+| 0:00 | The idea, and the tickets on the Jira board |
+| 1:00 | LIST-9 starts: its Temporal run and event history |
+| 2:30 | The agent asks questions instead of guessing |
+| 3:00 | LIST-10 starts in parallel |
+| 5:00 | Specs ready for review, approved in Jira |
+| 7:30 | Tests, then code, in the sandbox: pending activities and heartbeats |
+| 8:30 | The progress checklist on the ticket |
+| 10:00 | The pull request: tests commit, code commit, CI green, assigned |
+| 11:30 | LangFuse: every model call and the cost per ticket |
+| 13:30 | One pull request per ticket |
 
 It works on [listings-api](https://github.com/yovannygomez/listings-api), a
 small FastAPI service, and has run real tickets end to end: about **$0.12 to
